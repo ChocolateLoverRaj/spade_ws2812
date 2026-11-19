@@ -1,0 +1,6 @@
+name = "ws2812"
+
+description = "Control ws2812 RGB LEDs"
+
+[libraries]
+ready_valid.git = "https://codeberg.org/spade-lang/ready_valid.git"

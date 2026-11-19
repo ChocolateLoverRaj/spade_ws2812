@@ -32,4 +32,3 @@ TODO
 
 ## Tests
 TODO
-# spade_ws2812

@@ -1,0 +1,129 @@
+use ready_valid::Rv;
+
+pub struct Pixel {
+    r: uint<8>,
+    g: uint<8>,
+    b: uint<8>,
+}
+
+impl Default for Pixel {
+    fn default() -> Self {
+        Self { r: 0, g: 0, b: 0 }
+    }
+}
+
+impl Pixel {
+    /// The bit order is G7, G6, ..., G0, R7, R6, ..., R0, B7, B6, ..., B0.
+    fn bit(self, bit: uint<5>) -> bool {
+        if bit < 8 {
+            self.g.as_bits()[trunc(7 -. bit)]
+        } else if bit < 16 {
+            self.r.as_bits()[trunc(15 -. bit)]
+        } else {
+            self.b.as_bits()[trunc(23 -. bit)]
+        }
+    }
+
+    /// The LEDs can be very bright.
+    /// This is a helper method to dim them.
+    /// Note that dimming them decreases the color contrast.
+    pub fn right_shift(self, value: uint<8>) -> Self {
+        Self {
+            r: self.r >> value,
+            g: self.g >> value,
+            b: self.b >> value,
+        }
+    }
+}
+
+pub enum Request {
+    SendPixel { pixel: Pixel },
+    SendReset,
+}
+
+enum State<#uint N> {
+    Idle,
+    SendBit { pixel: Pixel, bit: uint<5>, cycles_left: uint<N> },
+    SendReset { cycles_left: uint<N> },
+}
+
+impl<#uint N> Config<N> {
+    fn send_bit_initial(self, pixel: Pixel, bit_index: uint<5>) -> State<N> {
+        State::SendBit {
+            pixel,
+            bit: bit_index,
+            cycles_left: if pixel.bit(bit_index) {
+                trunc(self.t_700_ns + self.t_600_ns - 1)
+            } else {
+                trunc(self.t_350_ns + self.t_800_ns - 1)
+            }
+        }
+    }
+}
+
+/// Timing from https://cdn-shop.adafruit.com/datasheets/WS2812.pdf
+pub struct Config<#uint N> {
+    // T0H
+    // Must be within ±150ns
+    t_350_ns: uint<N>,
+    // T1H
+    // Must be within ±150ns
+    t_700_ns: uint<N>,
+    // T0L
+    // Must be within ±150ns
+    t_800_ns: uint<N>,
+    // T1L
+    // Must be within ±150ns
+    t_600_ns: uint<N>,
+    // RES (reset time)
+    // Must be at least 50μs
+    t_50_us: uint<N>
+}
+
+pub entity ws2812_output<#uint N>(clk: clock, rst: bool, rv: Rv<Request>, config: Config<N>) -> bool {
+    let Rv { _data: request, ready } = rv;
+
+
+    reg(clk) state:  State<N> reset(rst: State::Idle) = match (state, request) {
+        (State::Idle, Some(Request::SendPixel { pixel })) => config.send_bit_initial(pixel, 0),
+        (State::Idle, Some(Request::SendReset)) => State::SendReset { cycles_left: config.t_50_us -. 1 },
+        (State::Idle, None) => State::Idle,
+        (State::SendBit { pixel, bit, cycles_left }, request) => if cycles_left == 0 {
+            if bit == 23 {
+                State::Idle
+            } else {
+                config.send_bit_initial(pixel, bit +. 1)
+            }
+        } else {
+            State::SendBit { pixel, bit, cycles_left: cycles_left -. 1 }
+        },
+        (State::SendReset { cycles_left }, _) => if cycles_left == 0 {
+            State::Idle
+        } else {
+            State::SendReset { cycles_left: cycles_left -. 1 }
+        }
+    };
+
+    set ready = match state {
+        State::Idle => true,
+        _ => false
+    };
+
+    match state {
+        State::Idle => false,
+        State::SendBit { pixel, bit, cycles_left } => {
+            let bit = pixel.bit(bit);
+            let t_low = if bit { config.t_600_ns } else { config.t_800_ns };
+            if cycles_left >= t_low {
+                // Pin should be high
+                true
+            } else {
+                // Pin should be low
+                false
+            }
+        },
+        State::SendReset { cycles_left } => {
+            false
+        }
+    }
+}
